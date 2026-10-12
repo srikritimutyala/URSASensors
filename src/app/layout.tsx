@@ -19,7 +19,7 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "Chords",
   description: "Web Serial based Biopotential Signal recorder application.",
-  manifest: `${basePath}/manifest.json`, // ✅ Dynamically set manifest path
+  manifest: `${basePath}/manifest.json`, // ✅ Dynamc nsdlk nvdslically set manifest path
 };
 
 const lobsterTwo = Lobster_Two({
