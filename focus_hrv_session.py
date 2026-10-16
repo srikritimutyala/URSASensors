@@ -185,23 +185,20 @@ def calculate_hrv(rr_list):
 
 session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-# 1. Focus Session CSV Table
-focus_filename = f"focus_session_{session_id}.csv"
-focus_file = open(
-    focus_filename,
+# 1. EEG Session CSV Table (Actual readings of all channels)
+eeg_filename = f"eeg_session_{session_id}.csv"
+eeg_file = open(
+    eeg_filename,
     "w",
     newline="",
     encoding="utf-8"
 )
-focus_writer = csv.writer(focus_file)
-focus_writer.writerow([
-    "session_id",
-    "timestamp",
-    "lsl_timestamp",
-    "focus_index",
-    "state"
+eeg_writer = csv.writer(eeg_file)
+eeg_writer.writerow([
+    "Counter",
+    *[f"Channel{i + 1}" for i in range(NUM_CHANNELS)]
 ])
-focus_file.flush()
+eeg_file.flush()
 
 # 2. HRV Session CSV Table (Separate table, shared session_id)
 hrv_filename = f"hrv_session_{session_id}.csv"
@@ -225,7 +222,7 @@ hrv_writer.writerow([
 ])
 hrv_file.flush()
 
-print(f"Saving focus data to: {focus_filename}")
+print(f"Saving EEG data to:   {eeg_filename}")
 print(f"Saving HRV data to:   {hrv_filename}\n")
 
 
@@ -245,6 +242,10 @@ try:
     while True:
         sample, lsl_timestamp = inlet.pull_sample()
         total_samples_received += 1
+
+        # Write actual reading of all EEG channels with Counter (0..255)
+        counter = (total_samples_received - 1) % 256
+        eeg_writer.writerow([counter, *[sample[i] for i in range(NUM_CHANNELS)]])
 
         for i in range(NUM_CHANNELS):
             buffers[i].append(sample[i])
@@ -268,40 +269,10 @@ try:
         ):
             last_print = now
             current_datetime = datetime.now().isoformat()
+            eeg_file.flush()
 
             # --------------------------------------------------------
-            # 1. PROCESS & WRITE EEG FOCUS DATA
-            # --------------------------------------------------------
-            eeg_slice = list(buffers[EEG_CHANNEL])[-BUFFER_SIZE:]
-            focs = calculate_focs(eeg_slice, fs=FS)
-
-            if focs is not None:
-                if focs >= THRESHOLD_HIGH_FOCUS:
-                    focus_state = "🔴 HIGH FOCUS — active cognitive load"
-                elif focs >= THRESHOLD_MODERATE_LOW:
-                    focus_state = "🟡 MODERATE — engaged but easing"
-                elif focs >= THRESHOLD_MIND_WANDER:
-                    focus_state = "🟠 LOW — relaxed / transitioning"
-                else:
-                    focus_state = "🔵 MIND WANDERING — disengaged"
-
-                focus_writer.writerow([
-                    session_id,
-                    current_datetime,
-                    lsl_timestamp,
-                    focs,
-                    focus_state
-                ])
-                focus_file.flush()
-
-                print(
-                    f"{current_datetime} | "
-                    f"FOCS: {focs:.4f} | "
-                    f"{focus_state}"
-                )
-
-            # --------------------------------------------------------
-            # 2. PROCESS & WRITE HRV DATA (SEPARATE TABLE)
+            # 1. PROCESS & WRITE HRV DATA (SEPARATE TABLE)
             # --------------------------------------------------------
             hrv_metrics = calculate_hrv(rr_intervals)
 
@@ -332,6 +303,7 @@ try:
 
                 print(
                     f"{current_datetime} | "
+                    f"EEG: Sample #{total_samples_received} logged | "
                     f"HR: {hrv_metrics['heart_rate']} BPM | "
                     f"RR: {hrv_metrics['last_rr']} ms | "
                     f"RMSSD: {hrv_metrics['rmssd']} ms | "
@@ -341,6 +313,7 @@ try:
                 beats_count = len(rr_intervals)
                 print(
                     f"{current_datetime} | "
+                    f"EEG: Sample #{total_samples_received} logged | "
                     f"HRV: Detecting beats... ({beats_count}/3 beats gathered)"
                 )
 
@@ -353,8 +326,8 @@ except KeyboardInterrupt:
     print("\nStopping EEG & HRV recording...")
 
 finally:
-    focus_file.close()
+    eeg_file.close()
     hrv_file.close()
 
-    print(f"\nFocus data saved to: {focus_filename}")
+    print(f"\nEEG data saved to: {eeg_filename}")
     print(f"HRV data saved to:   {hrv_filename}")

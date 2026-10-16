@@ -769,6 +769,14 @@ const NPG_Ble = () => {
             const sampleTimestampMs = recordingStartTimeRef.current + Math.round((sampleIdx / sampleRate) * 1000);
             const counter = channelData[0];
             const channelValues = selectedChannels.map((ch) => channelData[ch] !== undefined ? channelData[ch] : 0);
+            const allChannelValues = Array.from(
+                { length: config.maxChannels },
+                (_, i) => (channelData[i + 1] !== undefined ? channelData[i + 1] : 0)
+            );
+            const allChannelLabels = Array.from(
+                { length: config.maxChannels },
+                (_, i) => `Channel${i + 1}`
+            );
 
             let rowData: (number | string)[];
 
@@ -788,13 +796,11 @@ const NPG_Ble = () => {
                 const currentBpm = latestHeartRateRef.current !== null ? latestHeartRateRef.current : "";
                 rowData = [sampleTimestampMs, elapsedSeconds, counter, ...channelValues, currentBpm, matchedRR];
             } else {
-                rowData = [sampleTimestampMs, elapsedSeconds, counter, ...channelValues];
+                rowData = [counter, ...allChannelValues];
             }
 
-            // Feed EEG for Focus Index (using first selected channel)
-            if (channelValues.length > 0) {
-                sessionMetricsManager.processEegSample(channelValues[0], elapsedSeconds, sampleRate);
-            }
+            // Record actual readings of all channels (Counter, Channel1, Channel2, Channel3...)
+            sessionMetricsManager.recordEegSample(counter, allChannelValues, allChannelLabels);
 
             // Feed ECG fallback if Polar is not connected and a secondary channel exists
             if (!isPolarConnectedRef.current && channelValues.length > 1) {
@@ -1273,10 +1279,8 @@ const NPG_Ble = () => {
                 toast.success("Recording started (NPG + Polar HRV synchronized)");
             } else {
                 csvHeaderRef.current = [
-                    "Timestamp_ms",
-                    "Elapsed_s",
                     "Counter",
-                    ...selectedChannelsRef.current.map((ch) => `Channel${ch}`)
+                    ...Array.from({ length: deviceConfigRef.current.maxChannels }, (_, i) => `Channel${i + 1}`)
                 ];
                 toast.success("Recording started");
             }
@@ -1310,7 +1314,7 @@ const NPG_Ble = () => {
             await processBuffer(activeBufferIndex, canvasElementCountRef.current, selectedChannels);
         }
 
-        // Export and automatically download separate HRV and Focus CSVs
+        // Export and automatically download separate HRV and EEG CSVs
         const exportResult = sessionMetricsManager.finishSession(workerRef.current);
 
         // Clear buffers after processing
@@ -1322,7 +1326,7 @@ const NPG_Ble = () => {
         await getFileCountFromIndexedDB();
 
         setIsProcessingRecording(false);
-        const downloadedFiles = [exportResult.hrvFilename, exportResult.focusFilename].filter(Boolean);
+        const downloadedFiles = [exportResult.hrvFilename, exportResult.eegFilename].filter(Boolean);
         if (downloadedFiles.length > 0) {
             toast.success(`Recording complete! Downloaded ${downloadedFiles.join(" and ")}`);
         } else {

@@ -45,6 +45,8 @@ export interface HrvRecord {
   state: string;
 }
 
+export type EegRecord = (number | string)[];
+
 export interface FocusRecord {
   sessionId: string;
   timestamp: string;
@@ -132,7 +134,11 @@ export class SessionMetricsManager {
   private lastEcgPeakSample: number = -1;
   private totalEcgSamples: number = 0;
 
-  // EEG Focus Index tracking
+  // EEG raw channel data tracking
+  private eegRecords: (number | string)[][] = [];
+  private eegHeader: string[] = ["Counter", "Channel1", "Channel2", "Channel3"];
+
+  // Legacy Focus Index tracking (kept for compatibility)
   private eegBuffer: number[] = [];
   private focusRecords: FocusRecord[] = [];
   private lastFocusLogElapsed: number = -1;
@@ -149,8 +155,12 @@ export class SessionMetricsManager {
     return this.hrvRecords.length;
   }
 
+  public get eegRecordCount(): number {
+    return this.eegRecords.length;
+  }
+
   public get focusRecordCount(): number {
-    return this.focusRecords.length;
+    return this.eegRecords.length;
   }
 
   /**
@@ -169,6 +179,8 @@ export class SessionMetricsManager {
     this.lastEcgPeakSample = -1;
     this.totalEcgSamples = 0;
 
+    this.eegRecords = [];
+    this.eegHeader = [];
     this.eegBuffer = [];
     this.focusRecords = [];
     this.lastFocusLogElapsed = -1;
@@ -315,39 +327,42 @@ export class SessionMetricsManager {
   }
 
   /**
-   * Process a biopotential EEG sample for Focus Index
+   * Record raw EEG sample with Counter and actual channel readings
    */
-  public processEegSample(
-    sampleValue: number,
-    elapsedSeconds: number,
-    sampleRate: number = 500
-  ): FocusMetrics | null {
-    if (!this.isActive) return null;
+  public recordEegSample(
+    counter: number,
+    channelValues: number[],
+    channelLabels?: string[]
+  ): void {
+    if (!this.isActive) return;
 
-    this.eegBuffer.push(sampleValue);
-    if (this.eegBuffer.length > 512) {
-      this.eegBuffer.shift();
-    }
-
-    // Compute Focus Index every 1.0 second
-    if (
-      this.eegBuffer.length === 512 &&
-      (elapsedSeconds - this.lastFocusLogElapsed >= 1.0 || this.lastFocusLogElapsed < 0)
-    ) {
-      const metrics = this.computeFocusIndex(this.eegBuffer, sampleRate);
-      if (metrics) {
-        this.focusRecords.push({
-          sessionId: this.sessionId,
-          timestamp: new Date().toISOString(),
-          elapsedS: +elapsedSeconds.toFixed(3),
-          focusIndex: metrics.focusIndex,
-          state: metrics.state,
-        });
-        this.lastFocusLogElapsed = elapsedSeconds;
-        return metrics;
+    if (this.eegHeader.length === 0) {
+      if (channelLabels && channelLabels.length === channelValues.length) {
+        this.eegHeader = ["Counter", ...channelLabels];
+      } else {
+        this.eegHeader = ["Counter", ...channelValues.map((_, i) => `Channel${i + 1}`)];
       }
     }
 
+    this.eegRecords.push([counter, ...channelValues]);
+  }
+
+  /**
+   * Backwards compatible processEegSample supporting both new channel arrays and legacy callers
+   */
+  public processEegSample(
+    sampleValueOrCounter: number,
+    elapsedSecondsOrChannels?: number | number[],
+    sampleRateOrLabels?: number | string[]
+  ): FocusMetrics | null {
+    if (Array.isArray(elapsedSecondsOrChannels)) {
+      this.recordEegSample(
+        sampleValueOrCounter,
+        elapsedSecondsOrChannels,
+        Array.isArray(sampleRateOrLabels) ? sampleRateOrLabels : undefined
+      );
+      return null;
+    }
     return null;
   }
 
@@ -496,11 +511,26 @@ export class SessionMetricsManager {
   }
 
   /**
-   * Export Focus table to CSV format
+   * Export EEG table to CSV format
+   * Counter,Channel1,Channel2,Channel3,...
+   */
+  public generateEegCsv(): string {
+    const header = this.eegHeader.length > 0
+      ? this.eegHeader
+      : ["Counter", "Channel1", "Channel2", "Channel3"];
+
+    const rows = this.eegRecords.map((r) => r.join(","));
+    return [header.join(","), ...rows].join("\n");
+  }
+
+  /**
+   * Legacy Focus CSV generator (now aliases to EEG CSV)
    */
   public generateFocusCsv(): string {
+    if (this.eegRecords.length > 0) {
+      return this.generateEegCsv();
+    }
     const header = ["session_id", "timestamp", "elapsed_s", "focus_index", "state"];
-
     const rows = this.focusRecords.map((r) => [
       r.sessionId,
       r.timestamp,
@@ -508,8 +538,7 @@ export class SessionMetricsManager {
       r.focusIndex,
       JSON.stringify(r.state),
     ]);
-
-    return [header.join(","), ...rows.map((row) => row.join(","))].join("\n");
+    return [header.join(","), ...rows].join("\n");
   }
 
   /**
@@ -529,8 +558,12 @@ export class SessionMetricsManager {
     ]);
   }
 
+  public getEegIndexedDbData(): (string | number)[][] {
+    return this.eegRecords;
+  }
+
   public getFocusIndexedDbData(): (string | number)[][] {
-    return this.focusRecords.map((r) => [
+    return this.eegRecords.length > 0 ? this.eegRecords : this.focusRecords.map((r) => [
       r.sessionId,
       r.timestamp,
       r.elapsedS,
@@ -544,24 +577,28 @@ export class SessionMetricsManager {
    */
   public finishSession(workerRef?: Worker | null): {
     hrvFilename: string | null;
+    eegFilename: string | null;
     focusFilename: string | null;
     hrvCount: number;
+    eegCount: number;
     focusCount: number;
     hrvBlob: Blob | null;
+    eegBlob: Blob | null;
     focusBlob: Blob | null;
     hrvCsv: string | null;
+    eegCsv: string | null;
     focusCsv: string | null;
   } {
     this.isActive = false;
 
     let hrvFilename: string | null = null;
-    let focusFilename: string | null = null;
+    let eegFilename: string | null = null;
     let hrvBlob: Blob | null = null;
-    let focusBlob: Blob | null = null;
+    let eegBlob: Blob | null = null;
     let hrvCsv: string | null = null;
-    let focusCsv: string | null = null;
+    let eegCsv: string | null = null;
 
-    // 1. Download HRV CSV
+    // 1. Download HRV CSV (if HRV data was collected)
     if (this.hrvRecords.length > 0) {
       hrvFilename = `hrv_session_${this.sessionId}.csv`;
       hrvCsv = this.generateHrvCsv();
@@ -589,33 +626,37 @@ export class SessionMetricsManager {
       }
     }
 
-    // 2. Download Focus CSV
-    if (this.focusRecords.length > 0) {
-      focusFilename = `focus_session_${this.sessionId}.csv`;
-      focusCsv = this.generateFocusCsv();
-      focusBlob = new Blob([focusCsv], { type: "text/csv;charset=utf-8" });
-      triggerBrowserDownload(focusBlob, focusFilename);
+    // 2. Download EEG CSV (Counter, Channel1, Channel2, Channel3...)
+    if (this.eegRecords.length > 0) {
+      eegFilename = `eeg_session_${this.sessionId}.csv`;
+      eegCsv = this.generateEegCsv();
+      eegBlob = new Blob([eegCsv], { type: "text/csv;charset=utf-8" });
+      triggerBrowserDownload(eegBlob, eegFilename);
 
-      // Also persist to IndexedDB
+      // Also persist to IndexedDB so it appears in the Datasets drawer
       if (workerRef) {
         workerRef.postMessage({
           action: "write",
-          data: this.getFocusIndexedDbData(),
-          filename: focusFilename,
-          header: ["session_id", "timestamp", "elapsed_s", "focus_index", "state"],
+          data: this.getEegIndexedDbData(),
+          filename: eegFilename,
+          header: this.eegHeader.length > 0 ? this.eegHeader : ["Counter", "Channel1", "Channel2", "Channel3"],
         });
       }
     }
 
     return {
       hrvFilename,
-      focusFilename,
+      eegFilename,
+      focusFilename: eegFilename,
       hrvCount: this.hrvRecords.length,
-      focusCount: this.focusRecords.length,
+      eegCount: this.eegRecords.length,
+      focusCount: this.eegRecords.length,
       hrvBlob,
-      focusBlob,
+      eegBlob,
+      focusBlob: eegBlob,
       hrvCsv,
-      focusCsv,
+      eegCsv,
+      focusCsv: eegCsv,
     };
   }
 }
